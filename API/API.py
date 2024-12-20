@@ -15,83 +15,76 @@ Mclient = Mistral(api_key=api_key)
 
 documents = [
     {
-        "name": "The Time Machine",
-        "description": "A man travels through time and witnesses the evolution of humanity.",
-        "author": "H.G. Wells",
-        "year": 1895,
+        "name": "Mindful Breathing",
+        "description": "A guided breathing exercise to help reduce anxiety and stress.",
+        "category": "Exercise",
     },
     {
-        "name": "Ender's Game",
-        "description": "A young boy is trained to become a military leader in a war against an alien race.",
-        "author": "Orson Scott Card",
-        "year": 1985,
+        "name": "Calm Music",
+        "description": "A playlist of calming instrumental music to soothe your mind.",
+        "category": "Music",
     },
-    
+    {
+        "name": "Therapist Directory",
+        "description": "A list of licensed therapists available for online consultations.",
+        "category": "Professional Help",
+    },
 ]
+
 
 encoder = SentenceTransformer("all-MiniLM-L6-v2")
 client = QdrantClient(":memory:")
 
 
-client.create_collection(
-    collection_name="my_books",
-    vectors_config=models.VectorParams(
-        size=encoder.get_sentence_embedding_dimension(), 
-        distance=models.Distance.COSINE,
-    ),
-)
+def initialize_collection():
+    client.create_collection(
+        collection_name="mental_health_resources",
+        vectors_config=models.VectorParams(
+            size=encoder.get_sentence_embedding_dimension(),
+            distance=models.Distance.COSINE,
+        ),
+    )
+    client.upload_points(
+        collection_name="mental_health_resources",
+        points=[
+            models.PointStruct(
+                id=idx, vector=encoder.encode(doc["description"]).tolist(), payload=doc
+            )
+            for idx, doc in enumerate(documents)
+        ],
+    )
 
-client.upload_points(
-    collection_name="my_books",
-    points=[
-        models.PointStruct(
-            id=idx, vector=encoder.encode(doc["description"]).tolist(), payload=doc
-        )
-        for idx, doc in enumerate(documents)
-    ],
-)
+initialize_collection()
 
 
-def retrieve(query, k=1):
+def retrieve_resources(query, k=3):
     hits = client.query_points(
-        collection_name="my_books",
+        collection_name="mental_health_resources",
         query=encoder.encode(query).tolist(),
         limit=k,
     ).points
-
     return [hit.payload for hit in hits]
 
 
 app = Flask(__name__)
-
-
-@app.route('/chat', methods=['GET'])
-def get_chat():
-    input = request.args.get('input')
-    if not input:
-        return jsonify({"error": "No name provided"}), 400
-
-    retrieved_chat = [doc for doc in documents if doc['name'] == input]
-    if retrieved_chat:
-        return jsonify(retrieved_chat[0])
-    else:
-        return jsonify({"error": "chat not found"}), 404
-
 
 @app.route('/chat', methods=['POST'])
 def chatbot():
     user_input = request.json.get('user_input')
     if not user_input:
         return jsonify({"error": "No user input provided"}), 400
-    
+
     try:
         
-        retrieved_chat = retrieve(user_input, k=3)
-        context = " ".join([json.dumps(doc) for doc in retrieved_chat])
+        retrieved_resources = retrieve_resources(user_input, k=3)
+        context = "\n".join([f"{doc['name']}: {doc['description']}" for doc in retrieved_resources])
 
         
-        messages = [{"role": "system", "content": f"Relevant knowledge: {context}"},
-                    {"role": "user", "content": user_input}]
+        messages = [
+            {"role": "system", "content": "You are a mental health assistant providing emotional support and personalized recommendations."},
+            {"role": "system", "content": f"Relevant resources:\n{context}"},
+            {"role": "user", "content": user_input}
+        ]
 
         
         chat_response = Mclient.chat.complete(
@@ -105,56 +98,36 @@ def chatbot():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/resources', methods=['POST'])
+def add_resource():
+    new_resource = request.json
+    if not new_resource or not new_resource.get('name') or not new_resource.get('description'):
+        return jsonify({"error": "Invalid resource data"}), 400
 
-@app.route('/chat', methods=['PUT'])
-def create_chat():
-    new_chat = request.json
-    if not new_chat or not new_chat.get('name'):
-        return jsonify({"error": "Invalid chat data"}), 400
-    
-    
-    chatbot.append(new_chat)
+    documents.append(new_resource)
     client.upload_points(
-        collection_name="my_books",
+        collection_name="mental_health_resources",
         points=[
             models.PointStruct(
-                id=len(chatbot)-1, 
-                vector=encoder.encode(new_chat["description"]).tolist(), 
-                payload=new_chat
+                id=len(documents)-1,
+                vector=encoder.encode(new_resource["description"]).tolist(),
+                payload=new_resource
             )
         ]
     )
-    return jsonify({"message": "chat added", "chat": new_chat})
+    return jsonify({"message": "Resource added", "resource": new_resource})
 
-
-@app.route('/chat', methods=['DELETE'])
-def delete_chat():
+@app.route('/resources', methods=['DELETE'])
+def delete_resource():
     name = request.json.get('name')
     if not name:
         return jsonify({"error": "No name provided"}), 400
 
-    
-    global chat
-    chat = [doc for doc in documents if doc['name'] != name]
-    
-    
-    client.create_collection(
-        collection_name="my_books",
-        vectors_config=models.VectorParams(
-            size=encoder.get_sentence_embedding_dimension(),
-            distance=models.Distance.COSINE,
-        ),
-    )
-    client.upload_points(
-        collection_name="my_books",
-        points=[
-            models.PointStruct(
-                id=idx, vector=encoder.encode(doc["description"]).tolist(), payload=doc
-            )
-            for idx, doc in enumerate(documents)
-        ],
-    )
+    global documents
+    documents = [doc for doc in documents if doc['name'] != name]
 
-    return jsonify({"message": f"chat '{name}' deleted."})
+    initialize_collection() 
+    return jsonify({"message": f"Resource '{name}' deleted."})
 
-app.run(debug=True)
+if __name__ == '__main__':
+    app.run(debug=True)
